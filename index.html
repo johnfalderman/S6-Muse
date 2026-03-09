@@ -1,7 +1,873 @@
 <!DOCTYPE html>
-<html>
-<head><title>Society6 Muse API</title></head>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Society6 Muse</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #root { height: 100%; }
+  </style>
+</head>
 <body>
-  <p>Society6 Muse product API. Nothing to see here.</p>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+const SYSTEM_PROMPT = `You are Society6's creative style concierge. Your name is "Muse."
+
+PERSONALITY:
+- Creative best friend who knows everything about art and home design
+- Warm, honest, emotionally intelligent — never precious or pretentious
+- Playful but elevated. "Weird in the best way."
+- Never say "Great choice!" or "Absolutely!" or generic affirmations
+- Connect art to emotion and life, not just decor
+- Short responses — you're texting a friend, not writing an essay
+
+TONE EXAMPLES:
+- "That wall is waiting for something real."
+- "Horses that don't scream barn decor."
+- "Created in their studio, completed in your space."
+- "Art that makes your mornings feel brighter."
+- "For the soft modernist in all of us."
+
+CONVERSATION FLOW:
+You have a natural back-and-forth conversation to understand what someone needs before recommending. Ask ONE question at a time. Be curious and specific.
+
+PHASE 1 — GATHER (2-3 exchanges):
+- Ask about their space, their life stage, what draws them in
+- Use "this or that" to narrow taste quickly:
+  "Quick one — does your space feel more like:
+  A) Calm and considered — breathing room, nothing too loud
+  B) Bold and personal — color, personality, conversation starters"
+- Ask about budget naturally: "What are you thinking budget-wise — are we doing a single statement piece or a few smaller ones?"
+- Ask ONE open-ended question to uncover deeper taste signals — not just about art, but about life, personality, obsessions. This is often the most useful signal. Examples:
+  "Is there anything you're really drawn to lately — in art, design, nature, places, objects — or equally, anything you really can't stand?"
+  "What does your space feel like right now, and what do you wish it felt like?"
+  "Tell me something you love that has nothing to do with art — could be a place, a feeling, a person, a season."
+  These answers reveal things no multiple choice can. Use them to inform the recommendation.
+
+PHASE 2 — RECOMMEND:
+Once you have enough, output a PRODUCTS block. Always show products IN the conversation — never send someone away first.
+
+Before the PRODUCTS block, write 2-3 sentences explaining WHY you're recommending these — what you understood about their taste, what to expect in the results. Be specific. Example:
+"Based on what you told me — horses but make it art-not-ranch, earthy palette, something with hand-made energy under $100 — I'm pulling framed prints that feel grounded and a little wild. Here's what came up:"
+
+Then output:
+<PRODUCTS>
+{
+  "collection": "framed-posters",
+  "tags": ["horse", "earthy", "abstract", "nature"],
+  "sort": "best-selling",
+  "mood": "earthy, organic, hand-made energy, not barn decor"
+}
+</PRODUCTS>
+
+PHASE 3 — AFTER PRODUCTS ARE SHOWN (the system will show them product cards):
+Follow up with ONE question:
+"See anything that feels right? Or want me to pull something in a different direction?"
+
+If they like something, offer to send them to browse more:
+"Love that one. If you want to see the full collection of pieces like this, I can send you there — or I can pull a few more options right here. What works better?"
+
+AVAILABLE COLLECTIONS (pick ONE most relevant):
+- art-prints (most popular, unframed)
+- framed-posters (framed, wall-ready)
+- canvas-prints (premium, gallery feel)
+- posters (affordable, unframed)
+- throw-pillows
+- shower-curtains  
+- throw-blankets
+- rugs
+- mugs
+- tote-bags
+
+TAGS TO USE (based on what they describe):
+Animals: horse, equestrian, dog, cat, bird, fox, bear, botanical
+Nature: ocean, beach, coastal, landscape, mountain, forest, floral, botanical, nature
+Style: abstract, minimal, watercolor, illustration, photography, vintage, boho, geometric, folk, line-art
+Mood: warm, calm, moody, colorful, bold, earthy, neutral, pastel, dark
+Subject: portrait, figure, plant, architecture, food, celestial, moon, star
+
+SORT: best-selling OR created-at
+
+IMPORTANT RULES:
+- ALWAYS show products in the chat — never send someone to the site without showing them something first
+- Keep responses SHORT — 3-5 sentences max in most cases
+- Only output ONE PRODUCTS block per response, at the very end
+- After products are shown, ask a follow-up question to keep the conversation going
+- If fetch fails, say so honestly and offer to refine the search`;
+
+async function callClaude(messages) {
+  const response = await fetch("/.netlify/functions/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 700,
+      system: SYSTEM_PROMPT,
+      messages
+    })
+  });
+  const data = await response.json();
+  return data.content?.[0]?.text || "";
+}
+
+function parseProductQuery(text) {
+  const match = text.match(/<PRODUCTS>([\s\S]*?)<\/PRODUCTS>/);
+  if (!match) return null;
+  try { return JSON.parse(match[1].trim()); } catch { return null; }
+}
+
+function stripProductBlock(text) {
+  return text.replace(/<PRODUCTS>[\s\S]*?<\/PRODUCTS>/, "").trim();
+}
+
+async function fetchProducts(query) {
+  const { collection, tags, sort } = query;
+  const col = collection || "art-prints";
+  const sortParam = sort === "created-at" ? "created-at" : "best-selling";
+  const targetUrl = `https://society6.com/collections/${col}/products.json?limit=50&sort_by=${sortParam}`;
+
+  // Multiple proxy strategies — try each until one works
+  const strategies = [
+    // Strategy 1: direct (works if CORS is open)
+    async () => {
+      const res = await fetch(targetUrl, { mode: "cors" });
+      if (!res.ok) throw new Error("direct failed");
+      return res.json();
+    },
+    // Strategy 2: allorigins
+    async () => {
+      const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
+      if (!res.ok) throw new Error("allorigins failed");
+      const wrapper = await res.json();
+      return JSON.parse(wrapper.contents);
+    },
+    // Strategy 3: corsproxy.io
+    async () => {
+      const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
+      if (!res.ok) throw new Error("corsproxy failed");
+      return res.json();
+    },
+    // Strategy 4: thingproxy
+    async () => {
+      const res = await fetch(`https://thingproxy.freeboard.io/fetch/${targetUrl}`);
+      if (!res.ok) throw new Error("thingproxy failed");
+      return res.json();
+    }
+  ];
+
+  let data = null;
+  for (const strategy of strategies) {
+    try {
+      data = await strategy();
+      if (data?.products) break;
+    } catch (e) {
+      console.log("Proxy attempt failed, trying next...", e.message);
+    }
+  }
+
+  if (!data?.products) return null;
+
+  let products = data.products || [];
+
+  // Tag filter
+  if (tags?.length > 0) {
+    const filtered = products.filter(p =>
+      tags.some(tag =>
+        p.tags?.some(t => t.toLowerCase().includes(tag.toLowerCase())) ||
+        p.title?.toLowerCase().includes(tag.toLowerCase())
+      )
+    );
+    if (filtered.length >= 2) products = filtered;
+  }
+
+  // One product per artist
+  const byArtist = {};
+  products.forEach(p => { if (!byArtist[p.vendor]) byArtist[p.vendor] = p; });
+
+  return Object.values(byArtist).slice(0, 6).map(p => ({
+    id: p.id,
+    title: p.title.replace(/ (Art Print|Poster|Framed Poster|Canvas Print|Throw Pillow|Shower Curtain|Mug|Tote Bag|Rug|Throw Blanket|Duvet Cover|Mini Art Print|Pillow Sham|Tapestry|Comforter|Duvet Set)$/i, ""),
+    artist: p.vendor,
+    productType: p.product_type,
+    price: p.variants?.[0]?.price,
+    image: p.images?.[0]?.src || null,
+    handle: p.handle,
+    url: `https://society6.com/${p.vendor}/${p.handle}`,
+  }));
+}
+
+function formatArtistName(vendor) {
+  if (!vendor) return "";
+  return vendor
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/\d+/g, "")
+    .trim();
+}
+
+function ProductCard({ product, onSelect }) {
+  const [imgError, setImgError] = useState(false);
+  return (
+    <div className="product-card" onClick={() => onSelect(product)}>
+      <div className="product-img-wrap">
+        {product.image && !imgError ? (
+          <img src={product.image} alt={product.title} loading="lazy" onError={() => setImgError(true)} />
+        ) : (
+          <div className="product-img-placeholder">✦</div>
+        )}
+        <div className="product-hover-overlay">
+          <span>View on Society6 →</span>
+        </div>
+      </div>
+      <div className="product-info">
+        <div className="product-artist">by {formatArtistName(product.artist)}</div>
+        <div className="product-title">{product.title}</div>
+        <div className="product-footer">
+          <span className="product-type">{product.productType}</span>
+          {product.price && <span className="product-price">from ${product.price}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProductsBlock({ products, query, onSelect }) {
+  const col = query?.collection || "art-prints";
+  const browseUrl = `https://society6.com/collections/${col}`;
+
+  return (
+    <div className="products-block">
+      <div className="products-label">Curated for you ✦</div>
+      <div className="products-grid">
+        {products.map(p => <ProductCard key={p.id} product={p} onSelect={onSelect} />)}
+      </div>
+      <a href={browseUrl} target="_blank" rel="noopener noreferrer" className="browse-link">
+        Browse the full {col.replace(/-/g, " ")} collection →
+      </a>
+    </div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <div className="typing-dots">
+      <span /><span /><span />
+    </div>
+  );
+}
+
+function LoadingCards() {
+  return (
+    <div className="loading-cards">
+      {[1,2,3].map(i => <div key={i} className="loading-card" />)}
+    </div>
+  );
+}
+
+function MuseAgent() {
+  const [messages, setMessages] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [input, setInput] = useState("");
+  const [thinking, setThinking] = useState(false);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [currentQuery, setCurrentQuery] = useState(null);
+  const bottomRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    setMessages([{
+      type: "assistant",
+      text: "Hey. I'm Muse — your guide to finding art that actually feels like you.\n\nTell me about your space, your mood, or just what you've been drawn to lately. We'll find something worth living with.",
+    }]);
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loadingProducts, thinking]);
+
+  const addMessage = (msg) => {
+    setMessages(prev => [...prev, msg]);
+  };
+
+  const handleProductSelect = (product) => {
+    window.open(product.url, "_blank");
+  };
+
+  const handleSend = async () => {
+    if (!input.trim() || thinking) return;
+    const userText = input.trim();
+    setInput("");
+
+    addMessage({ type: "user", text: userText });
+    setThinking(true);
+
+    const newHistory = [...history, { role: "user", content: userText }];
+
+    try {
+      const response = await callClaude(newHistory);
+      const productQuery = parseProductQuery(response);
+      const cleanText = stripProductBlock(response);
+
+      addMessage({ type: "assistant", text: cleanText });
+      setHistory([...newHistory, { role: "assistant", content: response }]);
+      setThinking(false);
+
+      if (productQuery) {
+        setCurrentQuery(productQuery);
+        setLoadingProducts(true);
+        const products = await fetchProducts(productQuery);
+        setLoadingProducts(false);
+
+        if (products && products.length > 0) {
+          addMessage({ type: "products", products, query: productQuery });
+        } else {
+          // Fetch failed — tell Muse to respond
+          const failHistory = [
+            ...newHistory,
+            { role: "assistant", content: response },
+            { role: "user", content: "The product fetch didn't work. Please let me know you couldn't load specific products right now and offer to help me browse the collection directly or try a different search." }
+          ];
+          setThinking(true);
+          const failResponse = await callClaude(failHistory);
+          addMessage({ type: "assistant", text: stripProductBlock(failResponse) });
+          setThinking(false);
+
+          // Show browse fallback
+          addMessage({ 
+            type: "browse", 
+            query: productQuery,
+            label: `Browse ${(productQuery.collection || "art-prints").replace(/-/g, " ")} on Society6`
+          });
+        }
+      }
+    } catch (e) {
+      setThinking(false);
+      addMessage({ type: "assistant", text: "Lost my train of thought — try again?" });
+    }
+
+    inputRef.current?.focus();
+  };
+
+  const handleKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const starters = [
+    "One empty wall, no idea where to start",
+    "Warm and earthy for my bedroom",
+    "Bold art that makes people stop",
+    "Calm and minimal — I hate clutter",
+    "Something playful, a little weird",
+  ];
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;1,400&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap');
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+          --cream: #FBFAF6;
+          --ink: #1a1814;
+          --grey: #8a8278;
+          --rule: #e8e2d9;
+          --terra: #c4603a;
+          --card: #f5f0e8;
+          --white: #fff;
+        }
+
+        body { font-family: 'DM Sans', sans-serif; background: var(--cream); color: var(--ink); }
+
+        .app {
+          max-width: 800px;
+          margin: 0 auto;
+          min-height: 100vh;
+          display: flex;
+          flex-direction: column;
+        }
+
+        /* ── HEADER ── */
+        .header {
+          padding: 1.25rem 1.75rem;
+          border-bottom: 1px solid var(--rule);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          position: sticky;
+          top: 0;
+          background: rgba(251,250,246,0.96);
+          backdrop-filter: blur(8px);
+          z-index: 10;
+        }
+
+        .header-brand {
+          display: flex;
+          align-items: baseline;
+          gap: 0.625rem;
+        }
+
+        .header-logo {
+          font-family: 'Playfair Display', serif;
+          font-size: 1.3rem;
+          font-weight: 400;
+          letter-spacing: -0.01em;
+        }
+
+        .header-name {
+          font-size: 0.68rem;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: var(--grey);
+          font-weight: 300;
+        }
+
+        .online-dot {
+          width: 7px; height: 7px;
+          border-radius: 50%;
+          background: #5cb85c;
+          animation: pulse 2.5s ease infinite;
+        }
+
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+        /* ── FEED ── */
+        .feed {
+          flex: 1;
+          overflow-y: auto;
+          padding: 1.75rem 1.75rem 0.5rem;
+          display: flex;
+          flex-direction: column;
+          gap: 1.125rem;
+        }
+
+        /* ── MESSAGES ── */
+        .msg {
+          display: flex;
+          gap: 0.75rem;
+          animation: rise 0.25s ease;
+        }
+
+        @keyframes rise {
+          from { opacity:0; transform:translateY(7px); }
+          to   { opacity:1; transform:translateY(0); }
+        }
+
+        .msg.user { flex-direction: row-reverse; }
+
+        .avatar {
+          width: 28px; height: 28px;
+          border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 0.65rem;
+          font-weight: 500;
+          flex-shrink: 0;
+          margin-top: 3px;
+        }
+
+        .msg.assistant .avatar {
+          background: var(--ink); color: var(--cream);
+          font-family: 'Playfair Display', serif;
+          font-size: 0.82rem; font-style: italic;
+        }
+
+        .msg.user .avatar {
+          background: var(--rule); color: var(--grey);
+          font-size: 0.58rem; letter-spacing: 0.06em; text-transform: uppercase;
+        }
+
+        .bubble {
+          max-width: 70%;
+          padding: 0.8rem 1.05rem;
+          line-height: 1.72;
+          font-size: 0.885rem;
+          font-weight: 300;
+          white-space: pre-wrap;
+        }
+
+        .msg.assistant .bubble {
+          background: var(--white);
+          border: 1px solid var(--rule);
+          border-radius: 3px 14px 14px 14px;
+        }
+
+        .msg.user .bubble {
+          background: var(--ink); color: var(--cream);
+          border-radius: 14px 3px 14px 14px;
+          font-weight: 400;
+        }
+
+        /* ── PRODUCTS ── */
+        .products-block {
+          margin-left: 40px;
+          animation: rise 0.3s ease 0.1s both;
+        }
+
+        .products-label {
+          font-size: 0.65rem;
+          letter-spacing: 0.18em;
+          text-transform: uppercase;
+          color: var(--grey);
+          margin-bottom: 0.75rem;
+          font-weight: 400;
+        }
+
+        .products-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 0.75rem;
+          margin-bottom: 0.875rem;
+        }
+
+        @media (max-width: 520px) { .products-grid { grid-template-columns: repeat(2,1fr); } }
+
+        .product-card {
+          background: var(--white);
+          border: 1px solid var(--rule);
+          border-radius: 6px;
+          overflow: hidden;
+          cursor: pointer;
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .product-card:hover {
+          transform: translateY(-3px);
+          box-shadow: 0 10px 24px rgba(0,0,0,0.08);
+        }
+
+        .product-img-wrap {
+          aspect-ratio: 1;
+          overflow: hidden;
+          background: var(--card);
+          position: relative;
+        }
+
+        .product-img-wrap img {
+          width: 100%; height: 100%;
+          object-fit: cover;
+          transition: transform 0.4s ease;
+        }
+
+        .product-card:hover img { transform: scale(1.05); }
+
+        .product-img-placeholder {
+          width: 100%; height: 100%;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 2rem; color: var(--rule);
+        }
+
+        .product-hover-overlay {
+          position: absolute; inset: 0;
+          background: rgba(26,24,20,0.52);
+          display: flex; align-items: center; justify-content: center;
+          opacity: 0;
+          transition: opacity 0.2s ease;
+          color: white;
+          font-size: 0.75rem;
+          letter-spacing: 0.05em;
+        }
+
+        .product-card:hover .product-hover-overlay { opacity: 1; }
+
+        .product-info { padding: 0.6rem 0.65rem 0.65rem; }
+
+        .product-artist {
+          font-size: 0.62rem;
+          letter-spacing: 0.08em;
+          color: var(--terra);
+          text-transform: uppercase;
+          margin-bottom: 0.18rem;
+        }
+
+        .product-title {
+          font-size: 0.76rem;
+          line-height: 1.35;
+          margin-bottom: 0.4rem;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
+
+        .product-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+
+        .product-type {
+          font-size: 0.6rem;
+          color: var(--grey);
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+
+        .product-price { font-size: 0.78rem; font-weight: 500; }
+
+        .browse-link {
+          display: inline-block;
+          font-size: 0.78rem;
+          color: var(--grey);
+          text-decoration: none;
+          border-bottom: 1px solid var(--rule);
+          padding-bottom: 1px;
+          transition: color 0.15s ease, border-color 0.15s ease;
+          letter-spacing: 0.01em;
+        }
+
+        .browse-link:hover { color: var(--terra); border-color: var(--terra); }
+
+        /* ── BROWSE FALLBACK ── */
+        .browse-block {
+          margin-left: 40px;
+          animation: rise 0.3s ease;
+        }
+
+        .browse-btn {
+          display: inline-block;
+          padding: 0.65rem 1.1rem;
+          background: var(--ink); color: var(--cream);
+          text-decoration: none;
+          font-size: 0.82rem;
+          border-radius: 8px;
+          transition: background 0.15s ease;
+          font-family: 'DM Sans', sans-serif;
+        }
+
+        .browse-btn:hover { background: var(--terra); }
+
+        /* ── LOADING ── */
+        .loading-cards {
+          margin-left: 40px;
+          display: grid;
+          grid-template-columns: repeat(3,1fr);
+          gap: 0.75rem;
+          animation: rise 0.2s ease;
+        }
+
+        .loading-card {
+          background: var(--rule);
+          border-radius: 6px;
+          aspect-ratio: 0.85;
+          animation: shimmer 1.6s ease infinite;
+        }
+
+        .loading-card:nth-child(2) { animation-delay: 0.2s; }
+        .loading-card:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes shimmer { 0%,100%{opacity:0.3} 50%{opacity:0.65} }
+
+        /* ── TYPING ── */
+        .typing-dots {
+          display: flex; gap: 5px; align-items: center; padding: 3px 0;
+        }
+
+        .typing-dots span {
+          width: 6px; height: 6px;
+          border-radius: 50%;
+          background: var(--grey);
+          animation: bob 1.3s ease infinite;
+        }
+
+        .typing-dots span:nth-child(2) { animation-delay: 0.18s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.36s; }
+
+        @keyframes bob {
+          0%,60%,100% { transform: translateY(0); opacity:0.4; }
+          30% { transform: translateY(-6px); opacity:1; }
+        }
+
+        /* ── STARTERS ── */
+        .starters {
+          padding: 0 1.75rem 0.75rem;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.4rem;
+        }
+
+        .starter {
+          padding: 0.35rem 0.8rem;
+          border: 1px solid var(--rule);
+          border-radius: 100px;
+          font-size: 0.74rem;
+          color: var(--grey);
+          cursor: pointer;
+          background: var(--white);
+          transition: all 0.15s ease;
+          font-family: 'DM Sans', sans-serif;
+          font-weight: 300;
+        }
+
+        .starter:hover { border-color: var(--ink); color: var(--ink); }
+
+        /* ── INPUT ── */
+        .input-bar {
+          padding: 0.875rem 1.75rem 1.25rem;
+          border-top: 1px solid var(--rule);
+          display: flex;
+          gap: 0.55rem;
+          align-items: flex-end;
+          background: rgba(251,250,246,0.97);
+        }
+
+        .input-shell {
+          flex: 1;
+          background: var(--white);
+          border: 1px solid var(--rule);
+          border-radius: 10px;
+          display: flex;
+          align-items: center;
+          padding: 0.65rem 0.95rem;
+          transition: border-color 0.15s ease;
+        }
+
+        .input-shell:focus-within { border-color: var(--ink); }
+
+        .input-field {
+          flex: 1;
+          border: none; outline: none;
+          font-family: 'DM Sans', sans-serif;
+          font-size: 0.875rem;
+          color: var(--ink);
+          background: transparent;
+          resize: none;
+          line-height: 1.5;
+          font-weight: 300;
+        }
+
+        .input-field::placeholder { color: var(--grey); }
+
+        .send {
+          width: 38px; height: 38px;
+          background: var(--ink); color: var(--cream);
+          border: none; border-radius: 9px;
+          cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          transition: background 0.15s ease;
+          flex-shrink: 0;
+        }
+
+        .send:hover:not(:disabled) { background: var(--terra); }
+        .send:disabled { opacity: 0.3; cursor: not-allowed; }
+      `}</style>
+
+      <div className="app">
+        {/* Header */}
+        <div className="header">
+          <div className="header-brand">
+            <div className="header-logo">søciety6</div>
+            <div className="header-name">Muse · Art Concierge</div>
+          </div>
+          <div className="online-dot" title="Online" />
+        </div>
+
+        {/* Feed */}
+        <div className="feed">
+          {messages.map((msg, i) => {
+            if (msg.type === "user") return (
+              <div key={i} className="msg user">
+                <div className="avatar">You</div>
+                <div className="bubble">{msg.text}</div>
+              </div>
+            );
+
+            if (msg.type === "assistant") return (
+              <div key={i} className="msg assistant">
+                <div className="avatar">M</div>
+                <div className="bubble">{msg.text}</div>
+              </div>
+            );
+
+            if (msg.type === "products") return (
+              <ProductsBlock
+                key={i}
+                products={msg.products}
+                query={msg.query}
+                onSelect={handleProductSelect}
+              />
+            );
+
+            if (msg.type === "browse") return (
+              <div key={i} className="browse-block">
+                <a
+                  href={`https://society6.com/collections/${msg.query?.collection || "art-prints"}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="browse-btn"
+                >
+                  {msg.label} →
+                </a>
+              </div>
+            );
+
+            return null;
+          })}
+
+          {thinking && (
+            <div className="msg assistant">
+              <div className="avatar">M</div>
+              <div className="bubble"><TypingDots /></div>
+            </div>
+          )}
+
+          {loadingProducts && <LoadingCards />}
+
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Starter chips — first message only */}
+        {messages.length <= 1 && (
+          <div className="starters">
+            {starters.map(s => (
+              <button key={s} className="starter" onClick={() => {
+                setInput(s);
+                setTimeout(() => inputRef.current?.focus(), 0);
+              }}>
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Input */}
+        <div className="input-bar">
+          <div className="input-shell">
+            <textarea
+              ref={inputRef}
+              className="input-field"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="Tell me about your space, your vibe, what you love..."
+              rows={1}
+            />
+          </div>
+          <button
+            className="send"
+            onClick={handleSend}
+            disabled={thinking || !input.trim()}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<MuseAgent />);
+  </script>
 </body>
 </html>
