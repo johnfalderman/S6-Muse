@@ -8,22 +8,24 @@ exports.handler = async (event) => {
     "Content-Type": "application/json",
   };
 
-  // Handle preflight
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
   }
 
-  const { collection = "art-prints", sort = "best-selling" } = event.queryStringParameters || {};
+  const { collection = "art-prints", sort = "best-selling", search = "" } = event.queryStringParameters || {};
 
   const validCollections = [
     "art-prints", "framed-posters", "canvas-prints", "posters",
     "throw-pillows", "shower-curtains", "throw-blankets", "rugs",
     "mugs", "tote-bags", "duvet-covers", "tapestries"
   ];
-
   const col = validCollections.includes(collection) ? collection : "art-prints";
   const sortParam = sort === "created-at" ? "created-at" : "best-selling";
-  const url = `https://society6.com/collections/${col}/products.json?limit=50&sort_by=${sortParam}`;
+
+  // Use search if provided, otherwise fall back to collection browse
+  const url = search
+    ? `https://society6.com/search/products.json?q=${encodeURIComponent(search)}&sort_by=${sortParam}&limit=100`
+    : `https://society6.com/collections/${col}/products.json?limit=100&sort_by=${sortParam}`;
 
   try {
     const data = await new Promise((resolve, reject) => {
