@@ -46,4 +46,3 @@ exports.handler = async (event) => {
     req.end();
   });
 };
-```
