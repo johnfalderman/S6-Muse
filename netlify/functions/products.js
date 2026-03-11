@@ -22,9 +22,9 @@ exports.handler = async (event) => {
   const col = validCollections.includes(collection) ? collection : "art-prints";
   const sortParam = sort === "created-at" ? "created-at" : "best-selling";
 
-  // Use search if provided, otherwise fall back to collection browse
+  // Use Shopify's suggest search endpoint for keyword queries, else collection browse
   const url = search
-    ? `https://society6.com/search/products.json?q=${encodeURIComponent(search)}&sort_by=${sortParam}&limit=100`
+    ? `https://society6.com/search/suggest.json?q=${encodeURIComponent(search)}&resources[type]=product&resources[limit]=20`
     : `https://society6.com/collections/${col}/products.json?limit=100&sort_by=${sortParam}`;
 
   try {
@@ -38,7 +38,28 @@ exports.handler = async (event) => {
         let body = "";
         res.on("data", chunk => body += chunk);
         res.on("end", () => {
-          try { resolve(JSON.parse(body)); }
+          try {
+            const parsed = JSON.parse(body);
+            // Normalize suggest.json format to products.json format
+            if (parsed?.resources?.results?.products) {
+              const items = parsed.resources.results.products;
+              resolve({
+                products: items.map(p => ({
+                  id: p.id,
+                  title: p.title,
+                  vendor: p.vendor,
+                  product_type: p.product_type || "",
+                  handle: p.handle,
+                  tags: p.tags || [],
+                  images: p.featured_image ? [{ src: p.featured_image }] : [],
+                  variants: p.variants || [{ price: p.price }],
+                  url: p.url,
+                }))
+              });
+            } else {
+              resolve(parsed);
+            }
+          }
           catch (e) { reject(new Error("Failed to parse JSON")); }
         });
       }).on("error", reject);
