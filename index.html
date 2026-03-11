@@ -62,9 +62,13 @@ Then output:
   "collection": "framed-posters",
   "tags": ["horse", "earthy", "abstract", "nature"],
   "sort": "best-selling",
-  "mood": "earthy, organic, hand-made energy, not barn decor"
+  "mood": "earthy, organic, hand-made energy, not barn decor",
+  "search_query": "horse art earthy abstract",
+  "search_label": "earthy horse art"
 }
 </PRODUCTS>
+
+The search_query should be 2-4 keywords that best describe what the user wants — these will be used to search Society6 directly. The search_label is a short human-readable phrase shown on the search button (e.g. "earthy horse art", "calm sunset prints", "bold geometric art").
 
 PHASE 3 — AFTER PRODUCTS ARE SHOWN (the system will show them product cards):
 Follow up with ONE question:
@@ -157,7 +161,9 @@ async function fetchProducts(query) {
   async function tryFetch(url) {
     // Try Netlify function first (most reliable)
     try {
-      const res = await fetch(`/.netlify/functions/product?collection=${col}&sort=${sortParam}&search=${encodeURIComponent(searchQuery)}`);
+      const params = new URLSearchParams({ collection: col, sort: sortParam });
+      if (searchQuery) params.set("search", searchQuery);
+      const res = await fetch(`/.netlify/functions/product?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         if (data?.products?.length > 0) return data;
@@ -265,17 +271,24 @@ function ProductCard({ product, onSelect }) {
 
 function ProductsBlock({ products, query, onSelect }) {
   const col = query?.collection || "art-prints";
-  const browseUrl = `https://society6.com/collections/${col}`;
+  const searchQuery = query?.search_query || query?.tags?.join(" ") || "";
+  const searchLabel = query?.search_label || searchQuery || col.replace(/-/g, " ");
+  const searchUrl = searchQuery
+    ? `https://society6.com/search?q=${encodeURIComponent(searchQuery)}`
+    : `https://society6.com/collections/${col}`;
 
   return (
     <div className="products-block">
       <div className="products-label">Curated for you ✦</div>
-      <div className="products-grid">
-        {products.map(p => <ProductCard key={p.id} product={p} onSelect={onSelect} />)}
-      </div>
-      <a href={browseUrl} target="_blank" rel="noopener noreferrer" className="browse-link">
-        Browse the full {col.replace(/-/g, " ")} collection →
+      {products && products.length > 0 && (
+        <div className="products-grid">
+          {products.map(p => <ProductCard key={p.id} product={p} onSelect={onSelect} />)}
+        </div>
+      )}
+      <a href={searchUrl} target="_blank" rel="noopener noreferrer" className="search-cta">
+        Search Society6 for "{searchLabel}" →
       </a>
+      <div className="search-cta-hint">See the full results on Society6</div>
     </div>
   );
 }
