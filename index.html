@@ -135,92 +135,52 @@ async function fetchProducts(query) {
   const col = collection || "art-prints";
   const sortParam = sort === "created-at" ? "created-at" : "best-selling";
 
-  // Build a search term from tags + mood for better relevance
-  const searchTerms = [];
-  if (tags?.length > 0) searchTerms.push(...tags.slice(0, 3));
-  if (mood) searchTerms.push(mood.split(",")[0].trim());
-  const searchQuery = searchTerms.join(" ").trim() || "art";
+  // Build keyword list from tags + mood for title filtering
+  const keywords = [];
+  if (tags?.length > 0) keywords.push(...tags);
+  if (mood) keywords.push(...mood.split(",").map(m => m.trim()).slice(0, 2));
 
-  // Use Society6 search endpoint for relevance, filtered by product type
-  const productTypeMap = {
-    "art-prints": "Art+Print",
-    "framed-posters": "Framed+Poster",
-    "canvas-prints": "Canvas+Print",
-    "posters": "Poster",
-    "throw-pillows": "Throw+Pillow",
-    "shower-curtains": "Shower+Curtain",
-    "throw-blankets": "Throw+Blanket",
-    "rugs": "Rug",
-    "mugs": "Mug",
-    "tote-bags": "Tote+Bag",
-  };
-  const productType = productTypeMap[col] || "Art+Print";
-  const searchUrl = `https://society6.com/search?q=${encodeURIComponent(searchQuery)}&product_type=${productType}&limit=50`;
-  const collectionUrl = `https://society6.com/collections/${col}/products.json?limit=100&sort_by=${sortParam}`;
+  let data = null;
 
-  async function tryFetch(url) {
-    // Try Netlify function first (most reliable)
+  // Try Netlify function (server-side, no CORS issues)
+  try {
+    const res = await fetch(`/.netlify/functions/product?collection=${col}&sort=${sortParam}`);
+    if (res.ok) data = await res.json();
+  } catch(e) {}
+
+  // Fallback: allorigins proxy
+  if (!data?.products) {
     try {
-      const params = new URLSearchParams({ collection: col, sort: sortParam });
-      if (searchQuery) params.set("search", searchQuery);
-      const res = await fetch(`/.netlify/functions/product?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.products?.length > 0) return data;
-      }
-    } catch(e) {}
-
-    // Fallback: allorigins proxy with collection URL
-    try {
-      const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(collectionUrl)}`);
+      const target = `https://society6.com/collections/${col}/products.json?limit=250&sort_by=${sortParam}`;
+      const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(target)}`);
       if (res.ok) {
         const wrapper = await res.json();
-        return JSON.parse(wrapper.contents);
+        data = JSON.parse(wrapper.contents);
       }
     } catch(e) {}
-
-    // Fallback: corsproxy
-    try {
-      const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(collectionUrl)}`);
-      if (res.ok) return res.json();
-    } catch(e) {}
-
-    return null;
   }
 
-  const data = await tryFetch(collectionUrl);
   if (!data?.products) return null;
 
   let products = data.products || [];
 
-  // Filter by tags against title (most reliable field)
-  if (tags?.length > 0) {
-    const allTerms = [...tags];
-    if (mood) allTerms.push(...mood.split(",").map(m => m.trim()));
-
+  // Filter by keywords against title (most reliable field)
+  if (keywords.length > 0) {
     const filtered = products.filter(p => {
-      const text = `${p.title} ${p.tags?.join(" ") || ""}`.toLowerCase();
-      return allTerms.some(term => text.includes(term.toLowerCase()));
+      const title = p.title?.toLowerCase() || "";
+      return keywords.some(kw => title.includes(kw.toLowerCase()));
     });
-    if (filtered.length >= 2) products = filtered;
+    // Only use filtered if we got enough results
+    if (filtered.length >= 3) products = filtered;
   }
 
-  // One product per artist
+  // One product per artist, skip "society6" vendor
   const byArtist = {};
   products.forEach(p => {
-    if (p.vendor && p.vendor !== "society6" && !byArtist[p.vendor]) {
+    if (p.vendor && p.vendor.toLowerCase() !== "society6" && !byArtist[p.vendor]) {
       byArtist[p.vendor] = p;
     }
   });
-
-  // If filtering left nothing good, just use all products (skip society6 vendor)
-  if (Object.keys(byArtist).length < 2) {
-    products.forEach(p => {
-      if (p.vendor && p.vendor !== "society6" && !byArtist[p.vendor]) {
-        byArtist[p.vendor] = p;
-      }
-    });
-  }
 
   return Object.values(byArtist).slice(0, 6).map(p => ({
     id: p.id,
